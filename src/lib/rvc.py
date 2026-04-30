@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import subprocess
 from itertools import chain
 
 from tqdm import tqdm
@@ -25,12 +26,49 @@ async def _poetry_get_venv(path: str):
     return stdout.splitlines()[0].decode()
 
 
+def _resolve_venv_python(venv: str):
+    candidates = (
+        os.path.join(venv, "Scripts", "python.exe"),
+        os.path.join(venv, "Scripts", "python"),
+        os.path.join(venv, "bin", "python"),
+        os.path.join(venv, "python"),
+    )
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
 async def _get_rvc_executable():
     rvc_path = os.getenv("RVC_PATH")
     venv = os.getenv("RVC_VENV")
     if venv is None or venv == "":
         venv = await _poetry_get_venv(rvc_path)
-    return os.path.join(rvc_path, venv, "python")
+
+    if not os.path.isabs(venv):
+        venv = os.path.join(rvc_path, venv)
+
+    return _resolve_venv_python(venv)
+
+
+def _print_torch_device(python: str, cwd: str):
+    """Best effort CUDA visibility check for diagnostics."""
+    cmd = [
+        python,
+        "-c",
+        (
+            "import torch;"
+            "print('RVC torch:', torch.__version__);"
+            "print('RVC CUDA available:', torch.cuda.is_available());"
+            "print('RVC CUDA device count:', torch.cuda.device_count())"
+        ),
+    ]
+    try:
+        output = subprocess.check_output(cmd, cwd=cwd, text=True, stderr=subprocess.STDOUT)
+        for line in output.strip().splitlines():
+            tqdm.write(line)
+    except Exception:
+        tqdm.write("Could not verify CUDA availability inside RVC environment.")
 
 
 class UVR:
@@ -50,9 +88,11 @@ class UVR:
         cwd = os.getcwd()
 
         self.pbar = tqdm(total=total, desc=title)
+        python = await _get_rvc_executable()
+        _print_torch_device(python, os.getenv("RVC_PATH"))
         self.process = await spawn(
             "RVC's venv python",
-            await _get_rvc_executable(),
+            python,
             os.path.join(cwd, "libs/rvc_uvr.py"),
             self.model,
             os.path.join(cwd, self.input_path),
@@ -201,9 +241,15 @@ async def batch_rvc(input_path: str, opt_path: str, overwrite: bool, **kwargs):
 
     os.makedirs(_opt_path, exist_ok=True)
 
+    files_total = sum(1 for _ in find_files(input_path))
+    tqdm.write(f"Queued {files_total} files for RVC conversion.")
+
+    python = await _get_rvc_executable()
+    _print_torch_device(python, os.getenv("RVC_PATH"))
+
     process = await spawn(
         "RVC's venv python",
-        await _get_rvc_executable(),
+        python,
         os.path.join(cwd, "libs/infer_batch_rvc.py"),
         *("--input_path", _input_path),
         *("--opt_path", _opt_path),
