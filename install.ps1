@@ -8,7 +8,11 @@
 param (
     [Parameter(HelpMessage = "Skips Lib Install")]
     [switch]
-    $SkipLibs
+    $SkipLibs,
+
+    [Parameter(HelpMessage = "PyTorch build: cu126 (NVIDIA, default), cu118 (older NVIDIA drivers) or cpu")]
+    [string]
+    $TorchBuild = "cu126"
 )
 
 $libs = @{
@@ -76,9 +80,15 @@ python -m venv .venv
 Write-Information -MessageData "Install python dependencies" -InformationAction Continue
 
 pip install .
-pip install --force-reinstall torch torchvision torchaudio
+# Plain "pip install torch" on Windows gives a CPU-only build, so use PyTorch's own index
+pip install --force-reinstall torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$TorchBuild"
+# CPU onnxruntime shadows onnxruntime-gpu when both are installed
+pip uninstall -y onnxruntime
 pip install --force-reinstall onnxruntime-gpu
 pip install --force-reinstall "numpy<1.24"
+
+Write-Information -MessageData "Checking CUDA" -InformationAction Continue
+python -c "import torch, onnxruntime as ort; print('torch', torch.__version__, '| CUDA available:', torch.cuda.is_available()); print('onnxruntime providers:', ort.get_available_providers())"
 
 Write-Information -MessageData "Done" -InformationAction Continue
 
